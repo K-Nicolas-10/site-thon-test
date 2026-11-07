@@ -6,7 +6,7 @@
  * `npm run serve` used to be `cd backend && cargo run`, which fails with
  * "sh: 1: cargo: not found" when npm's /bin/sh does not source ~/.bashrc
  * (where rustup puts ~/.cargo/bin on PATH). This script finds cargo itself and
- * points FRONTEND_DIR / DATA_DIR at the repo root so the server works whether
+ * points FRONTEND_DIR at the repo root so the server works whether
  * it is started from the repo root or from backend/.
  *
  *   node scripts/serve.mjs              # cargo run
@@ -57,7 +57,6 @@ if (!cargo) {
 const env = {
   ...process.env,
   FRONTEND_DIR: process.env.FRONTEND_DIR ?? path.join(root, "frontend"),
-  DATA_DIR: process.env.DATA_DIR ?? path.join(root, "data"),
 };
 
 const cargoArgs = ["run", "--manifest-path", path.join(backend, "Cargo.toml")];

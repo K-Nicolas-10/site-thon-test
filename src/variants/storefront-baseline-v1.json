@@ -1,0 +1,14 @@
+{
+    "variant_id": "storefront-baseline-v1",
+    "cohorts": [
+        {
+            "match": { "os": "any", "viewport_bucket": "any" },
+            "slots": {
+                "hero": "Hero_Apple_Ecosystem",
+                "finder": "GuidedFinder",
+                "shipping": "MultiStepShippingSelector"
+            },
+            "catalog_filter": { "category": "any", "price_tier": "any" }
+        }
+    ]
+}

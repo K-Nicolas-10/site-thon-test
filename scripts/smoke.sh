@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Smoke test for the shop API and the testing-grounds endpoints.
+# Smoke test for the shop API.
 # Assumes the backend is running (npm run serve).
 set -euo pipefail
 
@@ -22,13 +22,7 @@ check "serves the site at /" "200" "$(curl -s -o /dev/null -w "%{http_code}" "$B
 check "serves assets" "200" "$(curl -s -o /dev/null -w "%{http_code}" "$BASE/assets/$(ls frontend/assets | grep '\.js$' | head -1)")"
 check "old variant prefix is gone" "404" "$(curl -s -o /dev/null -w "%{http_code}" "$BASE/v2/")"
 
-check "assignment" '"variant"' "$(curl -s "$BASE/api/ab/assign?visitor=smoke&unit=home")"
-check "assignment is sticky" "$(curl -s "$BASE/api/ab/assign?visitor=smoke&unit=home")" \
-  "$(curl -s "$BASE/api/ab/assign?visitor=smoke&unit=home")"
-
-check "event log" '"ok":true' "$(curl -s -X POST "$BASE/api/ab/events" \
-  -H 'content-type: application/json' \
-  -d '{"visitor":"smoke","session":"s","variant":"v2","unit":"home","name":"exposure"}')"
+check "the old A/B API is gone" "404" "$(curl -s -o /dev/null -w "%{http_code}" "$BASE/api/ab/stats")"
 
 check "products" '"products"' "$(curl -s "$BASE/api/products")"
 check "product by slug" 'trailhead-mid-gtx' "$(curl -s "$BASE/api/products/trailhead-mid-gtx")"
@@ -43,6 +37,8 @@ check "checkout" '"order"' "$(curl -s -X POST "$BASE/api/checkout" \
 check "empty cart rejected" "cart is empty" "$(curl -s -X POST "$BASE/api/checkout" \
   -H 'content-type: application/json' -d "{\"sid\":\"$SID\",\"email\":\"smoke@example.com\"}")"
 
-check "stats" '"variants"' "$(curl -s "$BASE/api/ab/stats")"
+check "config" '"ingest_url"' "$(curl -s "$BASE/api/config")"
+check "webhook for an unknown order" "404" "$(curl -s -o /dev/null -w "%{http_code}" -X POST "$BASE/api/webhooks/payment" \
+  -H 'content-type: application/json' -d '{"type":"payment.succeeded","order_id":"nope"}')"
 
 exit "$fail"

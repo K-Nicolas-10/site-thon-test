@@ -1,3 +1,4 @@
 export * from "./api";
-export * from "./ab";
+export * from "./beacon";
 export * from "./cart";
+export * from "./variant";

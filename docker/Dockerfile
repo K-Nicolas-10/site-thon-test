@@ -21,6 +21,7 @@ RUN npm ci --ignore-scripts
 
 COPY tsconfig.base.json ./
 COPY shared/ shared/
+COPY src/ src/
 COPY frontends/ frontends/
 RUN npm run build
 
@@ -50,12 +51,10 @@ WORKDIR /app
 COPY --from=rust /src/target/release/stride-backend /usr/local/bin/stride-backend
 COPY --from=web /app/frontend /app/frontend
 
-RUN mkdir -p /app/data && chown -R stride:stride /app
 USER stride
 
 ENV PORT=8080 \
-    FRONTEND_DIR=/app/frontend \
-    DATA_DIR=/app/data
+    FRONTEND_DIR=/app/frontend
 
 EXPOSE 8080
 

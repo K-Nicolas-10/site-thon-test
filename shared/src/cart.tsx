@@ -2,12 +2,12 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 import type { ReactNode } from "react";
 import { api, cartSid } from "./api";
 import type { Cart } from "./api";
-import { useAb } from "./ab";
+import { track } from "./beacon";
 
 interface CartContextValue {
   cart: Cart;
   loading: boolean;
-  add: (productId: string, qty?: number, props?: Record<string, unknown>) => Promise<void>;
+  add: (productId: string, qty?: number) => Promise<void>;
   update: (productId: string, qty: number) => Promise<void>;
   remove: (productId: string) => Promise<void>;
   clearLocal: () => void;
@@ -26,7 +26,6 @@ const CartContext = createContext<CartContextValue>({
 export function CartProvider({ children }: { children: ReactNode }) {
   const [cart, setCart] = useState<Cart>(empty);
   const [loading, setLoading] = useState(true);
-  const { track } = useAb();
   const sid = useMemo(cartSid, []);
 
   useEffect(() => {
@@ -38,12 +37,11 @@ export function CartProvider({ children }: { children: ReactNode }) {
   }, [sid]);
 
   const add = useCallback(
-    async (productId: string, qty = 1, props: Record<string, unknown> = {}) => {
-      const next = await api.addToCart(sid, productId, qty);
-      setCart(next);
-      track("add_to_cart", { product_id: productId, qty, ...props });
+    async (productId: string, qty = 1) => {
+      setCart(await api.addToCart(sid, productId, qty));
+      track("add_to_cart", productId);
     },
-    [sid, track],
+    [sid],
   );
 
   const update = useCallback(
@@ -56,9 +54,9 @@ export function CartProvider({ children }: { children: ReactNode }) {
   const remove = useCallback(
     async (productId: string) => {
       setCart(await api.removeFromCart(sid, productId));
-      track("remove_from_cart", { product_id: productId });
+      track("remove_from_cart", productId);
     },
-    [sid, track],
+    [sid],
   );
 
   const clearLocal = useCallback(() => setCart(empty), []);

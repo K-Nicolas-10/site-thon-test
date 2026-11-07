@@ -1,4 +1,3 @@
-mod ab;
 mod api;
 mod catalog;
 mod state;
@@ -29,19 +28,13 @@ async fn main() {
     let frontend_dir = std::env::var("FRONTEND_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("frontend"));
-    let data_dir = std::env::var("DATA_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("data"));
 
-    let state = AppState::new(frontend_dir.clone(), data_dir);
+    let state = AppState::new(frontend_dir.clone());
 
     let api = Router::new()
         .route("/health", get(|| async { "ok" }))
-        // Testing-grounds plumbing. No experiment logic lives here.
-        .route("/ab/assign", get(ab::assign))
-        .route("/ab/events", post(ab::record_event))
-        .route("/ab/stats", get(ab::stats))
-        .route("/ab/reset", post(ab::reset))
+        .route("/config", get(api::config))
+        .route("/webhooks/payment", post(api::payment_webhook))
         // Shop endpoints.
         .route("/products", get(api::products))
         .route("/products/{id}", get(api::product))
@@ -97,9 +90,8 @@ async fn shutdown_signal() {
 
 /// Serves the front-end from `frontend/` at the site root.
 ///
-/// The site is served at the root (`/`), not under a variant prefix. The
-/// testing grounds still assign a variant via `/api/ab/assign`; the front-end
-/// reports it, but there is only one front-end to render.
+/// The site is served at the root (`/`), not under a variant prefix. The edge
+/// proxy in front decides the variant and injects it into this HTML.
 async fn static_files(
     axum::extract::State(state): axum::extract::State<AppState>,
     axum::extract::OriginalUri(uri): axum::extract::OriginalUri,

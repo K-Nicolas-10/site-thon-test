@@ -4,7 +4,6 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
-use crate::ab::AbData;
 use crate::catalog::Product;
 
 #[derive(Clone)]
@@ -14,8 +13,6 @@ pub struct AppState {
 }
 
 pub struct Inner {
-    /// Testing-grounds plumbing. Owns no experiment decisions.
-    pub ab: Mutex<AbData>,
     pub catalog: Vec<Product>,
     pub carts: Mutex<HashMap<String, Cart>>,
     pub orders: Mutex<Vec<Order>>,
@@ -37,6 +34,8 @@ pub struct Order {
     pub id: String,
     pub items: Vec<OrderItem>,
     pub total_cents: u64,
+    /// `pending` until the payment webhook arrives, then `paid`.
+    pub status: String,
     pub email: String,
     pub created_at: String,
 }
@@ -50,12 +49,10 @@ pub struct OrderItem {
 }
 
 impl AppState {
-    pub fn new(frontend_dir: PathBuf, data_dir: PathBuf) -> Self {
-        let _ = std::fs::create_dir_all(&data_dir);
+    pub fn new(frontend_dir: PathBuf) -> Self {
         Self {
             frontend_dir,
             inner: std::sync::Arc::new(Inner {
-                ab: Mutex::new(AbData::load(&data_dir)),
                 catalog: crate::catalog::seed(),
                 carts: Mutex::new(HashMap::new()),
                 orders: Mutex::new(Vec::new()),

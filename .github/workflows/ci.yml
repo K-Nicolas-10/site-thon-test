@@ -106,7 +106,7 @@ jobs:
 
       - name: start server
         run: |
-          FRONTEND_DIR="$PWD/frontend" DATA_DIR="$PWD/data" \
+          FRONTEND_DIR="$PWD/frontend" \
             ./backend/target/release/stride-backend > server.log 2>&1 &
           for i in $(seq 1 60); do
             curl -sf http://127.0.0.1:8080/api/health >/dev/null && break
@@ -120,3 +120,20 @@ jobs:
       - name: server log
         if: always()
         run: cat server.log
+
+  # ---------------------------------------------------------------------------
+  # The QA stack (ADR 0001, D-37) and the storefront's own Playwright suite.
+  # ---------------------------------------------------------------------------
+  qa:
+    name: QA stack (Playwright)
+    runs-on: ubuntu-latest
+    needs: [backend, frontend]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: e2e
+        run: docker compose -f qa/compose.yaml run --build --rm e2e
+
+      - name: stack log
+        if: always()
+        run: docker compose -f qa/compose.yaml logs
