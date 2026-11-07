@@ -1,0 +1,27 @@
+{
+  "name": "stride-testing-grounds",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "workspaces": [
+    "shared",
+    "backend",
+    "frontends/*"
+  ],
+  "scripts": {
+    "dev": "npm run build && npm run serve",
+    "build": "npm run build -w @stride/v2",
+    "typecheck": "npm run typecheck -w @stride/v2",
+    "serve": "npm run serve --workspace=backend",
+    "serve:release": "npm run serve:release --workspace=backend",
+    "test": "npm run test -w @stride/backend"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.6",
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
+    "@vitejs/plugin-react": "^6.2.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.6"
+  }
+}

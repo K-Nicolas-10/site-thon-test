@@ -1,0 +1,122 @@
+# CI — lint, typecheck, build and smoke-test the whole stack.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Rust backend: format, clippy (warnings are errors), tests.
+  # ---------------------------------------------------------------------------
+  backend:
+    name: Backend (Rust)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend -> target
+
+      - name: cargo fmt
+        run: cargo fmt --manifest-path backend/Cargo.toml --all -- --check
+
+      - name: cargo clippy
+        run: cargo clippy --manifest-path backend/Cargo.toml --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test --manifest-path backend/Cargo.toml --all-targets
+
+      - name: cargo build (release)
+        run: cargo build --manifest-path backend/Cargo.toml --release --locked
+
+  # ---------------------------------------------------------------------------
+  # Front-end: typecheck and production build.
+  # ---------------------------------------------------------------------------
+  frontend:
+    name: Front-end (React)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      - name: typecheck
+        run: npm run typecheck
+
+      - name: build
+        run: npm run build
+
+      - name: upload build output
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # End-to-end: build both halves, start the real server, hit the real API and
+  # the real pages. This is the job that proves the shop actually works.
+  # ---------------------------------------------------------------------------
+  smoke:
+    name: Smoke test (server + API)
+    runs-on: ubuntu-latest
+    needs: [backend, frontend]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend -> target
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build
+
+      - name: cargo build
+        run: cargo build --manifest-path backend/Cargo.toml --release --locked
+
+      - name: start server
+        run: |
+          FRONTEND_DIR="$PWD/frontend" DATA_DIR="$PWD/data" \
+            ./backend/target/release/stride-backend > server.log 2>&1 &
+          for i in $(seq 1 60); do
+            curl -sf http://127.0.0.1:8080/api/health >/dev/null && break
+            sleep 0.5
+          done
+          curl -sf http://127.0.0.1:8080/api/health
+
+      - name: smoke
+        run: scripts/smoke.sh
+
+      - name: server log
+        if: always()
+        run: cat server.log

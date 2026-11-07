@@ -1,0 +1,8 @@
+# Build artifacts and local state
+node_modules/
+frontend/
+backend/target/
+data/
+*.log
+.DS_Store
+.env
