@@ -123,6 +123,50 @@ for (const viewport of VIEWPORTS) {
     });
 }
 
+test.describe('inline shipping', () => {
+    for (const viewport of VIEWPORTS) {
+        test.describe(`at ${viewport.width}x${viewport.height}`, () => {
+            test.use({ viewport });
+
+            test('saves country, postcode and method on one screen', async ({ page }) => {
+                await open(
+                    page,
+                    injected({
+                        cohorts: [
+                            {
+                                match: { viewport_bucket: '<400' },
+                                slots: { shipping: 'InlineShippingForm' },
+                            },
+                        ],
+                    }),
+                );
+                await page.getByRole('button', { name: /^Skip/ }).click();
+                await page.getByRole('button', { name: 'Quick add' }).first().click();
+                await page.getByRole('button', { name: 'Bag (1)' }).click();
+
+                const form = page.locator('[data-component=InlineShippingForm]');
+                await expect(form).toBeVisible();
+                // Every field is on screen at once, with no step-by-step paging.
+                await expect(form.locator('[name=shipping_country]')).toBeVisible();
+                await expect(form.locator('[name=shipping_zip]')).toBeVisible();
+                await expect(form.locator('[name=shipping_method]')).toBeVisible();
+                await noHorizontalOverflow(page);
+
+                const placeOrder = page.getByRole('button', { name: 'Place order' });
+                await expect(placeOrder).toBeDisabled();
+
+                await page.fill('[name=shipping_country]', 'Romania');
+                await page.fill('[name=shipping_zip]', '010101');
+                await page.selectOption('[name=shipping_method]', 'Express (1-2 days)');
+                await page.getByRole('button', { name: 'Save shipping' }).click();
+
+                await placeOrder.click();
+                await expect(page.getByTestId('confirmation')).toBeVisible();
+            });
+        });
+    }
+});
+
 test.describe('variant config', () => {
     test('with no config the baseline renders', async ({ page }) => {
         await open(page);
