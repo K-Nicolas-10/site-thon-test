@@ -1,5 +1,7 @@
 // The storefront's own suite (ADR 0001, D-20). It stands in for the edge proxy by setting
 // window.__VARIANT__ before the page loads, and captures the session record by stubbing sendBeacon.
+// The console's specs gate runs it behind the real edge, which injects its own window.__VARIANT__ in
+// <head>; the stand-in is locked read-only so that later assignment is ignored and the test keeps control.
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 
@@ -22,15 +24,26 @@ function injected(config: object = {}) {
     };
 }
 
-async function open(page: Page, variant: object | null = injected()) {
+/** Sets window.__VARIANT__ (undefined for null) so that the edge's injected assignment cannot replace it. */
+async function standInForEdge(page: Page, variant: object | null) {
     await page.addInitScript((value) => {
-        if (value) (window as any).__VARIANT__ = value;
+        Object.defineProperty(window, '__VARIANT__', {
+            value: value ?? undefined,
+            writable: false,
+            configurable: false,
+        });
+    }, variant);
+}
+
+async function open(page: Page, variant: object | null = injected()) {
+    await standInForEdge(page, variant);
+    await page.addInitScript(() => {
         (window as any).__beacons = [];
         navigator.sendBeacon = (url, body) => {
             (window as any).__beacons.push({ url, body });
             return true;
         };
-    }, variant);
+    });
     await page.route('**/api/config', (route) =>
         route.fulfill({ json: { ingest_url: INGEST_URL } }),
     );
@@ -123,48 +136,61 @@ for (const viewport of VIEWPORTS) {
     });
 }
 
+const INLINE_SHIPPING = injected({
+    cohorts: [
+        {
+            match: { viewport_bucket: '<400' },
+            slots: { shipping: 'InlineShippingForm' },
+        },
+    ],
+});
+
+async function openBag(page: Page) {
+    await page.getByRole('button', { name: /^Skip/ }).click();
+    await page.getByRole('button', { name: 'Quick add' }).first().click();
+    await page.getByRole('button', { name: 'Bag (1)' }).click();
+}
+
 test.describe('inline shipping', () => {
-    for (const viewport of VIEWPORTS) {
-        test.describe(`at ${viewport.width}x${viewport.height}`, () => {
-            test.use({ viewport });
+    test.describe('below 400px', () => {
+        test.use({ viewport: VIEWPORTS[0] });
 
-            test('saves country, postcode and method on one screen', async ({ page }) => {
-                await open(
-                    page,
-                    injected({
-                        cohorts: [
-                            {
-                                match: { viewport_bucket: '<400' },
-                                slots: { shipping: 'InlineShippingForm' },
-                            },
-                        ],
-                    }),
-                );
-                await page.getByRole('button', { name: /^Skip/ }).click();
-                await page.getByRole('button', { name: 'Quick add' }).first().click();
-                await page.getByRole('button', { name: 'Bag (1)' }).click();
+        test('saves country, postcode and method on one screen', async ({ page }) => {
+            await open(page, INLINE_SHIPPING);
+            await openBag(page);
 
-                const form = page.locator('[data-component=InlineShippingForm]');
-                await expect(form).toBeVisible();
-                // Every field is on screen at once, with no step-by-step paging.
-                await expect(form.locator('[name=shipping_country]')).toBeVisible();
-                await expect(form.locator('[name=shipping_zip]')).toBeVisible();
-                await expect(form.locator('[name=shipping_method]')).toBeVisible();
-                await noHorizontalOverflow(page);
+            const form = page.locator('[data-component=InlineShippingForm]');
+            await expect(form).toBeVisible();
+            // Every field is on screen at once, with no step-by-step paging.
+            await expect(form.locator('[name=shipping_country]')).toBeVisible();
+            await expect(form.locator('[name=shipping_zip]')).toBeVisible();
+            await expect(form.locator('[name=shipping_method]')).toBeVisible();
+            await noHorizontalOverflow(page);
 
-                const placeOrder = page.getByRole('button', { name: 'Place order' });
-                await expect(placeOrder).toBeDisabled();
+            const placeOrder = page.getByRole('button', { name: 'Place order' });
+            await expect(placeOrder).toBeDisabled();
 
-                await page.fill('[name=shipping_country]', 'Romania');
-                await page.fill('[name=shipping_zip]', '010101');
-                await page.selectOption('[name=shipping_method]', 'Express (1-2 days)');
-                await page.getByRole('button', { name: 'Save shipping' }).click();
+            await page.fill('[name=shipping_country]', 'Romania');
+            await page.fill('[name=shipping_zip]', '010101');
+            await page.selectOption('[name=shipping_method]', 'Express (1-2 days)');
+            await page.getByRole('button', { name: 'Save shipping' }).click();
 
-                await placeOrder.click();
-                await expect(page.getByTestId('confirmation')).toBeVisible();
-            });
+            await placeOrder.click();
+            await expect(page.getByTestId('confirmation')).toBeVisible();
         });
-    }
+    });
+
+    test.describe('at 400px and wider', () => {
+        test.use({ viewport: VIEWPORTS[1] });
+
+        test('the cohort does not match, so the step-by-step selector stays', async ({ page }) => {
+            await open(page, INLINE_SHIPPING);
+            await openBag(page);
+
+            await expect(page.locator('[data-component=MultiStepShippingSelector]')).toBeVisible();
+            await expect(page.locator('[data-component=InlineShippingForm]')).toHaveCount(0);
+        });
+    });
 });
 
 test.describe('variant config', () => {
@@ -212,9 +238,10 @@ test.describe('variant config', () => {
     test('a component missing from the registry fails loudly', async ({ page }) => {
         const errors: string[] = [];
         page.on('pageerror', (error) => errors.push(error.message));
-        await page.addInitScript((value) => {
-            (window as any).__VARIANT__ = value;
-        }, injected({ cohorts: [{ match: {}, slots: { hero: 'Hero_Does_Not_Exist' } }] }));
+        await standInForEdge(
+            page,
+            injected({ cohorts: [{ match: {}, slots: { hero: 'Hero_Does_Not_Exist' } }] }),
+        );
         await page.goto('/');
         await expect.poll(() => errors.join()).toContain('Hero_Does_Not_Exist');
     });
