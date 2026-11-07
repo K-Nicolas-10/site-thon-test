@@ -385,6 +385,20 @@ button {
   margin: 0;
 }
 
+.shipping-fields {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.shipping-fields .field {
+  margin: 12px 0;
+}
+
+.shipping.inline .next {
+  width: 100%;
+}
+
 .field select {
   padding: 10px;
   border: 1px solid var(--line);
@@ -704,5 +718,8 @@ button {
   }
   .cart-lines li {
     grid-template-columns: 46px 1fr 56px;
+  }
+  .shipping-fields {
+    grid-template-columns: 1fr;
   }
 }

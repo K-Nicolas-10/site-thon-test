@@ -4,6 +4,7 @@
 import { GuidedFinder } from "./GuidedFinder";
 import { Hero_Android_Ecosystem } from "./Hero_Android_Ecosystem";
 import { Hero_Apple_Ecosystem } from "./Hero_Apple_Ecosystem";
+import { InlineShippingForm } from "./InlineShippingForm";
 import { MultiStepShippingSelector } from "./MultiStepShippingSelector";
 
 export const registry = {
@@ -11,6 +12,7 @@ export const registry = {
   Hero_Android_Ecosystem,
   GuidedFinder,
   MultiStepShippingSelector,
+  InlineShippingForm,
 } as const;
 
 export type ComponentName = keyof typeof registry;
