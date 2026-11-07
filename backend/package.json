@@ -2,7 +2,7 @@
   "name": "@stride/backend",
   "private": true,
   "version": "0.1.0",
-  "description": "Rust backend for the Stride shop and its testing grounds",
+  "description": "Rust backend for the Stride shop",
   "scripts": {
     "serve": "node ../scripts/serve.mjs",
     "serve:release": "node ../scripts/serve.mjs --release",

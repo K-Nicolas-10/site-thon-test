@@ -1,0 +1,77 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "variant-config.schema.json",
+    "title": "Stride variant config",
+    "description": "The contract for config variants (ADR 0001, D-24, D-35). The first cohort that matches the visitor wins; a slot it omits keeps the baseline's component.",
+    "type": "object",
+    "required": ["variant_id", "cohorts"],
+    "additionalProperties": false,
+    "properties": {
+        "variant_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
+        "parent_variant_id": { "type": "string" },
+        "cohorts": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "$ref": "#/$defs/cohort" }
+        }
+    },
+    "$defs": {
+        "componentName": {
+            "type": "string",
+            "pattern": "^[A-Z][A-Za-z0-9_]*$",
+            "description": "A key of src/components/registry.ts"
+        },
+        "cohort": {
+            "type": "object",
+            "required": ["match", "slots"],
+            "additionalProperties": false,
+            "properties": {
+                "match": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "os": {
+                            "enum": [
+                                "Android",
+                                "iOS",
+                                "Windows",
+                                "macOS",
+                                "any"
+                            ]
+                        },
+                        "viewport_bucket": {
+                            "enum": ["<400", "400-767", ">=768", "any"]
+                        }
+                    }
+                },
+                "slots": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "hero": { "$ref": "#/$defs/componentName" },
+                        "finder": { "$ref": "#/$defs/componentName" },
+                        "shipping": { "$ref": "#/$defs/componentName" }
+                    }
+                },
+                "catalog_filter": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "category": {
+                            "enum": [
+                                "footwear",
+                                "headwear",
+                                "accessories",
+                                "any"
+                            ]
+                        },
+                        "price_tier": {
+                            "enum": ["low", "mid", "premium", "any"],
+                            "description": "low is under $50, mid under $120, premium $120 and up"
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

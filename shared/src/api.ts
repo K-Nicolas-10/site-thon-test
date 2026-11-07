@@ -45,6 +45,7 @@ export interface Order {
   id: string;
   items: { product_id: string; name: string; qty: number; unit_price_cents: number }[];
   total_cents: number;
+  status: "pending" | "paid";
   email: string;
   created_at: string;
 }
@@ -86,7 +87,19 @@ export const api = {
     }),
   checkout: (sid: string, email: string) =>
     req<{ order: Order }>(`/checkout`, { method: "POST", body: JSON.stringify({ sid, email }) }),
+  order: (id: string) => req<{ order: Order }>(`/orders/${encodeURIComponent(id)}`),
 };
+
+/** Check out, then wait for the payment webhook: the order only counts once it is paid. */
+export async function placeOrder(sid: string, email: string): Promise<Order> {
+  const { order } = await api.checkout(sid, email);
+  for (let attempt = 0; attempt < 50; attempt++) {
+    const current = await api.order(order.id);
+    if (current.order.status === "paid") return current.order;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  throw new Error("Payment was not confirmed in time.");
+}
 
 export function money(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`;
@@ -95,7 +108,10 @@ export function money(cents: number): string {
 export function cartSid(): string {
   let sid = localStorage.getItem("stride.sid");
   if (!sid) {
-    sid = crypto.randomUUID();
+    // Not crypto.randomUUID: it only exists on HTTPS, and QA reaches the shop over plain HTTP.
+    sid = Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) =>
+      b.toString(16).padStart(2, "0"),
+    ).join("");
     localStorage.setItem("stride.sid", sid);
   }
   return sid;

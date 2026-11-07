@@ -1,32 +1,73 @@
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useState } from "react";
+import type { ComponentType } from "react";
 import {
-  AbProvider,
   CartProvider,
   api,
+  cartSid,
+  cohort,
+  inCatalog,
+  markConverted,
   money,
-  useAb,
+  placeOrder,
+  priceTier,
+  step,
   useCart,
-  useTrackClick,
+  variant,
 } from "@stride/shared";
 import type { Product } from "@stride/shared";
+import { registry } from "./registry";
 
 /**
- * V2 — "The guided journey."
- * A three-step landing wizard (category → size → product) that gates the
- * shop behind choices nobody asked for. The cart is a separate page, reached
- * from a small link in the footer, and the product CTA sits above the price.
+ * The shop's views. The hero, the finder and the shipping selector are slots the variant config
+ * fills from the registry (ADR 0001, D-24). The cart is a separate page, reached from a small link
+ * in the footer, and the product CTA sits above the price.
  */
 export function App() {
   return (
-    <AbProvider fallback={<p className="boot">Loading…</p>}>
-      <CartProvider>
-        <Router />
-      </CartProvider>
-    </AbProvider>
+    <CartProvider>
+      <Router />
+    </CartProvider>
   );
 }
 
-type Route = { name: "home" } | { name: "product"; id: string } | { name: "cart" };
+export type Route =
+  | { name: "home" }
+  | { name: "product"; id: string }
+  | { name: "cart" }
+  | { name: "confirmation"; orderId: string };
+
+function Slot({ slot, ...props }: { slot: string } & Record<string, unknown>) {
+  const name = cohort.slots[slot];
+  const Component = (registry as Record<string, ComponentType<any>>)[name];
+  // A config naming a component the registry lacks must fail QA loudly (D-28).
+  if (!Component) throw new Error(`Unknown component "${name}" in slot "${slot}"`);
+  return <Component {...props} />;
+}
+
+function useCheckout(go: (r: Route) => void) {
+  const { clearLocal } = useCart();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function checkout(email = "", before?: () => Promise<void>) {
+    setBusy(true);
+    setError(null);
+    step("payment");
+    try {
+      await before?.();
+      const order = await placeOrder(cartSid(), email);
+      markConverted(order.total_cents / 100);
+      clearLocal();
+      go({ name: "confirmation", orderId: order.id });
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return { busy, error, checkout };
+}
 
 function useRoute(): [Route, (r: Route) => void] {
   const [route, setRoute] = useState<Route>({ name: "home" });
@@ -40,12 +81,15 @@ function useRoute(): [Route, (r: Route) => void] {
 
 function Router() {
   const [route, setRoute] = useRoute();
+  // A layout effect runs before the views' own effects, so a view can report a deeper step.
+  useLayoutEffect(() => step(route.name === "home" ? "landing" : route.name), [route.name]);
   return (
     <div className="shell">
       <Nav route={route} go={setRoute} />
       {route.name === "home" && <Home go={setRoute} />}
       {route.name === "product" && <ProductPage id={route.id} go={setRoute} />}
       {route.name === "cart" && <CartPage go={setRoute} />}
+      {route.name === "confirmation" && <Confirmation orderId={route.orderId} go={setRoute} />}
       <Foot go={setRoute} />
     </div>
   );
@@ -68,123 +112,27 @@ function Nav({ route, go }: { route: Route; go: (r: Route) => void }) {
   );
 }
 
-const STEPS = ["What are you shopping for?", "What size do you wear?", "Here is what we suggest"];
-
 function Home({ go }: { go: (r: Route) => void }) {
-  const { assignment } = useAb();
-  const [step, setStep] = useState(0);
-  const [category, setCategory] = useState<string | null>(null);
-  const [size, setSize] = useState<string | null>(null);
   const [products, setProducts] = useState<Product[]>([]);
 
   useEffect(() => {
-    api.products().then((r) => setProducts(r.products));
+    api.products().then((r) => setProducts(r.products.filter(inCatalog)));
   }, []);
-
-  const filtered = products.filter(
-    (p) =>
-      (!category || p.category === category) &&
-      (!size || p.sizes.includes(size) || p.sizes.includes("One size")),
-  );
 
   return (
     <main>
-      <section className="intro">
-        <p className="kicker">A considered shop for footwear, headwear and accessories</p>
-        <h1>
-          Find the thing
-          <br />
-          you will actually wear.
-        </h1>
-        <p className="intro-copy">
-          We stock a small, carefully chosen range. Answer three short questions and we will
-          narrow it down for you.
-        </p>
-      </section>
+      <Slot slot="hero" />
+      <Slot slot="finder" products={products} go={go} />
+      <ExpressCheckout products={products} go={go} />
 
-      <ol className="steps">
-        {STEPS.map((s, i) => (
-          <li key={s} className={i === step ? "step current" : i < step ? "step done" : "step"}>
-            <span className="num">{i + 1}</span>
-            {s}
-          </li>
-        ))}
-      </ol>
-
-      <section className="panel">
-        {step === 0 && (
-          <div className="choice-grid">
-            {[
-              { key: "footwear", label: "Footwear", note: "Shoes, boots, sneakers" },
-              { key: "headwear", label: "Headwear", note: "Caps, beanies, hats" },
-              { key: "accessories", label: "Accessories", note: "Socks, bags, bottles" },
-            ].map((c) => (
-              <button
-                key={c.key}
-                className={category === c.key ? "choice on" : "choice"}
-                onClick={() => {
-                  setCategory(c.key);
-                  setStep(1);
-                }}
-              >
-                <b>{c.label}</b>
-                <small>{c.note}</small>
-              </button>
-            ))}
-            <button className="skip" onClick={() => setStep(2)}>
-              Skip — show me everything
-            </button>
-          </div>
-        )}
-
-        {step === 1 && (
-          <div>
-            <p className="hint">
-              Pick the size you normally wear. We will show everything available in that size,
-              plus one-size items.
-            </p>
-            <div className="sizes">
-              {["36", "37", "38", "39", "40", "41", "42", "43", "44", "45", "46"].map((s) => (
-                <button
-                  key={s}
-                  className={size === s ? "size on" : "size"}
-                  onClick={() => setSize(s)}
-                >
-                  {s}
-                </button>
-              ))}
-            </div>
-            <div className="row">
-              <button className="back" onClick={() => setStep(0)}>
-                Back
-              </button>
-              <button className="next" onClick={() => setStep(2)}>
-                Continue
-              </button>
-            </div>
-          </div>
-        )}
-
-        {step === 2 && (
-          <div>
-            <div className="result-head">
-              <h2>
-                {filtered.length} {filtered.length === 1 ? "item" : "items"} match
-              </h2>
-              <button className="back" onClick={() => setStep(0)}>
-                Start over
-              </button>
-            </div>
-            <ul className="results">
-              {filtered.map((p) => (
-                <ResultRow key={p.id} product={p} go={go} />
-              ))}
-            </ul>
-          </div>
-        )}
-      </section>
-
-      <section className="why" id="why">
+      <section
+        className="why"
+        id="why"
+        data-component="WhyStride"
+        data-target-os="any"
+        data-price-tier="n/a"
+        data-layout-density="medium"
+      >
         <h2>Why Stride</h2>
         <div className="why-grid">
           <div>
@@ -212,48 +160,65 @@ function Home({ go }: { go: (r: Route) => void }) {
         </div>
       </section>
 
-      <p className="variant">Variant {assignment?.variant ?? "…"}</p>
+      <p className="variant">Variant {variant.variant_id ?? "baseline"}</p>
     </main>
   );
 }
 
-function ResultRow({ product, go }: { product: Product; go: (r: Route) => void }) {
-  const { add } = useCart();
-  const trackClick = useTrackClick();
+/** One-click purchase of the bag, or of today's pick when the bag is empty. */
+function ExpressCheckout({ products, go }: { products: Product[]; go: (r: Route) => void }) {
+  const { cart, add } = useCart();
+  const { busy, error, checkout } = useCheckout(go);
+  const pick = products.find((p) => p.in_stock);
+
   return (
-    <li className="result">
-      <div
-        className="swatch"
-        style={{ background: `linear-gradient(140deg, ${product.swatch[0]}, ${product.swatch[1]})` }}
-      />
-      <div className="result-main">
-        <h3>{product.name}</h3>
-        <p className="result-short">{product.short}</p>
-        <p className="result-meta">
-          {product.category} · ★ {product.rating.toFixed(1)} ({product.reviews}) ·{" "}
-          {product.in_stock ? "In stock" : "Out of stock"}
+    <section
+      className="express"
+      data-component="ExpressCheckout"
+      data-target-os="any"
+      data-price-tier="mixed"
+      data-layout-density="low"
+    >
+      <div>
+        <h2>{cart.count ? "Ready when you are" : "Today's pick"}</h2>
+        <p className="hint">
+          {cart.count
+            ? `${cart.count} in your bag, ${money(cart.subtotal_cents)}`
+            : pick && `${pick.name}, ${money(pick.price_cents)}`}
         </p>
+        {error && (
+          <p className="error" role="alert">
+            {error}
+          </p>
+        )}
       </div>
-      <div className="result-side">
-        <span className="price">{money(product.price_cents)}</span>
-        <button
-          className="quick"
-          disabled={!product.in_stock}
-          onClick={() => add(product.id, 1, { from: "quick_add" })}
-        >
-          Quick add
-        </button>
-        <button
-          className="textlink"
-          onClick={() => {
-            trackClick("open_product", { product_id: product.id });
-            go({ name: "product", id: product.id });
-          }}
-        >
-          Details
-        </button>
-      </div>
-    </li>
+      <button
+        className="next"
+        disabled={busy || (!cart.count && !pick)}
+        onClick={() => checkout("", cart.count || !pick ? undefined : () => add(pick.id))}
+      >
+        {busy ? "Placing order…" : "Checkout"}
+      </button>
+    </section>
+  );
+}
+
+function Confirmation({ orderId, go }: { orderId: string; go: (r: Route) => void }) {
+  return (
+    <main
+      className="cart"
+      data-component="Confirmation"
+      data-testid="confirmation"
+      data-order-id={orderId}
+    >
+      <h1>Order placed</h1>
+      <p>
+        Thank you. Your order reference is <b>{orderId}</b>.
+      </p>
+      <button className="next" onClick={() => go({ name: "home" })}>
+        Back to the shop
+      </button>
+    </main>
   );
 }
 
@@ -262,7 +227,6 @@ function ProductPage({ id, go }: { id: string; go: (r: Route) => void }) {
   const [size, setSize] = useState("");
   const [color, setColor] = useState("");
   const { add } = useCart();
-  const trackClick = useTrackClick();
 
   useEffect(() => {
     api.product(id).then((r) => {
@@ -275,7 +239,13 @@ function ProductPage({ id, go }: { id: string; go: (r: Route) => void }) {
   if (!product) return <main className="loading">Loading product…</main>;
 
   return (
-    <main className="product">
+    <main
+      className="product"
+      data-component="ProductDetail"
+      data-target-os="any"
+      data-price-tier={priceTier(product.price_cents)}
+      data-layout-density="high"
+    >
       <button className="back" onClick={() => go({ name: "home" })}>
         ← Back to results
       </button>
@@ -313,7 +283,7 @@ function ProductPage({ id, go }: { id: string; go: (r: Route) => void }) {
             <div className="pickers">
               <label>
                 Size
-                <select value={size} onChange={(e) => setSize(e.target.value)}>
+                <select name="product_size" value={size} onChange={(e) => setSize(e.target.value)}>
                   {product.sizes.map((s) => (
                     <option key={s}>{s}</option>
                   ))}
@@ -321,7 +291,7 @@ function ProductPage({ id, go }: { id: string; go: (r: Route) => void }) {
               </label>
               <label>
                 Colour
-                <select value={color} onChange={(e) => setColor(e.target.value)}>
+                <select name="product_color" value={color} onChange={(e) => setColor(e.target.value)}>
                   {product.colors.map((c) => (
                     <option key={c.name}>{c.name}</option>
                   ))}
@@ -337,10 +307,7 @@ function ProductPage({ id, go }: { id: string; go: (r: Route) => void }) {
             <button
               className="add"
               disabled={!product.in_stock}
-              onClick={() => {
-                add(product.id, 1, { size, color });
-                trackClick("add_to_cart_button", { product_id: product.id });
-              }}
+              onClick={() => add(product.id)}
             >
               {product.in_stock ? "Add to cart" : "Out of stock"}
             </button>
@@ -353,48 +320,25 @@ function ProductPage({ id, go }: { id: string; go: (r: Route) => void }) {
 }
 
 function CartPage({ go }: { go: (r: Route) => void }) {
-  const { cart, update, remove, clearLocal } = useCart();
-  const { track } = useAb();
+  const { cart, update, remove } = useCart();
+  const { busy, error, checkout } = useCheckout(go);
   const [email, setEmail] = useState("");
-  const [orderId, setOrderId] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [shipped, setShipped] = useState(false);
+  const hasLines = cart.lines.length > 0;
 
-  if (orderId) {
-    return (
-      <main className="cart">
-        <h1>Order placed</h1>
-        <p>
-          Thank you. Your order reference is <b>{orderId}</b>.
-        </p>
-        <button className="next" onClick={() => go({ name: "home" })}>
-          Back to the shop
-        </button>
-      </main>
-    );
-  }
-
-  async function checkout() {
-    setBusy(true);
-    setError(null);
-    try {
-      const { order } = await api.checkout(localStorage.getItem("stride.sid") ?? "", email);
-      track("purchase", {
-        order_id: order.id,
-        value_cents: order.total_cents,
-        items: order.items.length,
-      });
-      clearLocal();
-      setOrderId(order.id);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setBusy(false);
-    }
-  }
+  useEffect(() => {
+    if (hasLines) step("shipping");
+  }, [hasLines]);
 
   return (
-    <main className="cart">
+    <main
+      className="cart"
+      data-component="CartDrawer"
+      data-slot="cart"
+      data-target-os="any"
+      data-price-tier="mixed"
+      data-layout-density="medium"
+    >
       <h1>Your bag</h1>
       {cart.lines.length === 0 ? (
         <p className="hint">Nothing in here yet.</p>
@@ -409,6 +353,8 @@ function CartPage({ go }: { go: (r: Route) => void }) {
                 />
                 <span className="name">{l.name}</span>
                 <input
+                  name="cart_qty"
+                  aria-label={`Quantity of ${l.name}`}
                   type="number"
                   min={1}
                   value={l.qty}
@@ -429,12 +375,17 @@ function CartPage({ go }: { go: (r: Route) => void }) {
               Shipping <b>{cart.shipping_cents ? money(cart.shipping_cents) : "Free"}</b>
             </p>
           </div>
+          <Slot slot="shipping" onDone={() => setShipped(true)} />
           <label className="field">
             Email for receipt
-            <input value={email} onChange={(e) => setEmail(e.target.value)} />
+            <input name="payment_email" value={email} onChange={(e) => setEmail(e.target.value)} />
           </label>
-          {error && <p className="error">{error}</p>}
-          <button className="next" disabled={busy} onClick={checkout}>
+          {error && (
+            <p className="error" role="alert">
+              {error}
+            </p>
+          )}
+          <button className="next" disabled={busy || !shipped} onClick={() => checkout(email)}>
             {busy ? "Placing order…" : "Place order"}
           </button>
         </>

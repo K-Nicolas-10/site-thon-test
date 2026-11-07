@@ -1,30 +1,30 @@
-# Stride — a shop and a testing ground for closed-loop A/B experiments
+# Stride — the storefront of a self-evolving frontend
 
 Stride sells **footwear, headwear and accessories**. It is a small, complete storefront — browse,
 filter, add to cart, check out — with one unusual property: it is built to be the *subject* of
 experiments rather than to run them.
 
 The application does **not** decide which variant a visitor sees, does not pick a winner, and does
-not compute lift. It provides the plumbing an external experimentation program needs to run a
-closed loop against real shopping behaviour:
+not compute lift. It is the storefront in the closed loop described by the console's
+[ADR 0001](https://github.com/bmardale/hackathon/blob/main/docs/decisions/0001-self-evolving-frontend-architecture.md):
 
 ```
                  ┌──────────────────────────────────────────────┐
-   visitor ─────▶│  React front-end (served at /)               │
-                 │  1. asks which variant it is                 │
-                 │  2. renders, reports "exposure"              │
-                 │  3. reports clicks / carts / purchases       │
+   visitor ─────▶│  edge proxy (console repo)                   │
+                 │  mints the session, picks the arm, injects   │
+                 │  window.__VARIANT__ into the HTML            │
                  └───────────────┬──────────────────────────────┘
-                                 │  /api/ab/*
+                                 │  proxied request
                  ┌───────────────▼──────────────────────────────┐
-                 │  Rust backend — testing grounds              │
-                 │  assignment hook · event log · raw counts    │
-                 │  (no experiment logic of its own)            │
+                 │  this repo: Rust backend + React front-end   │
+                 │  1. renders the cohort the config selects    │
+                 │  2. tags what it renders with data-component │
+                 │  3. reports one session_end on pagehide      │
                  └───────────────┬──────────────────────────────┘
-                                 │  assign / events.jsonl / stats
+                                 │  POST /api/ingest/{token}
                  ┌───────────────▼──────────────────────────────┐
-                 │  your experiment platform (external)         │
-                 │  decides assignment, analyses, decides next  │
+                 │  console (Laravel, external)                 │
+                 │  attributes, briefs an agent, runs QA, learns│
                  └──────────────────────────────────────────────┘
 ```
 
@@ -35,7 +35,7 @@ closed loop against real shopping behaviour:
 - [Quick start](#quick-start)
 - [What the site does](#what-the-site-does)
 - [Architecture](#architecture)
-- [The testing grounds](#the-testing-grounds)
+- [The console contract](#the-console-contract)
 - [HTTP API reference](#http-api-reference)
 - [Configuration](#configuration)
 - [Development](#development)
@@ -75,9 +75,10 @@ The storefront is a single React app with three views, all client-side:
 
 | View | What happens |
 | --- | --- |
-| **Landing** | A three-step wizard: pick a category → pick a size → see matching products. A "skip" link bypasses it. Below that, a "Why Stride" section. |
+| **Landing** | A hero, then a three-step wizard: pick a category → pick a size → see matching products. A "skip" link bypasses it. Below that, a one-click *Checkout* for the bag or today's pick, and a "Why Stride" section. |
 | **Product** | A product page with description, materials, care, delivery info, size and colour pickers, price and an *Add to cart* button. |
-| **Bag** | Cart lines with quantity controls, a subtotal, shipping (free over $75), an email field and *Place order*. |
+| **Bag** | Cart lines with quantity controls, a subtotal, shipping (free over $75), a three-step shipping selector, an email field and *Place order*. |
+| **Confirmation** | The order reference, once the order is paid. |
 
 The cart is reachable from a small **Bag (n)** link in the footer. That placement is deliberate:
 the front-end is tuned to be *just below middle* — functional and shippable, but with the kind of
@@ -99,15 +100,16 @@ gradient used as its image placeholder.
 ### Checkout
 
 Checkout is simulated. `POST /api/checkout` validates the cart, builds an order, empties the cart
-and returns an order reference (`ST-######`). **No payment is taken and nothing ships.** The
-front-end reports a `purchase` event at that moment — that is the conversion the testing grounds
-record.
+and returns an order reference (`ST-######`). **No payment is taken and nothing ships.**
+
+With `PAYMENT_URL` set, the order starts `pending`, the backend charges that provider, and the order
+becomes `paid` when the provider calls `POST /api/webhooks/payment`. The front-end waits for `paid`
+before it confirms the order and counts the conversion. Without it, the order is paid on the spot.
 
 ### State
 
-Carts and orders live in memory and are lost on restart. The only persisted state is the A/B event
-log (`data/events.jsonl`). This is intentional: the shop is a test fixture, not a production
-commerce system.
+Carts and orders live in memory and are lost on restart. This is intentional: the shop is a test
+fixture, not a production commerce system.
 
 ---
 
@@ -122,8 +124,7 @@ commerce system.
 | `src/main.rs` | Router, static file serving, graceful shutdown, bind address |
 | `src/api.rs` | Products, cart, checkout, orders |
 | `src/catalog.rs` | The product catalogue (static data) |
-| `src/state.rs` | Shared app state: catalogue, carts, orders, testing grounds |
-| `src/ab.rs` | **Testing grounds only** — assignment hook, event log, raw counts |
+| `src/state.rs` | Shared app state: catalogue, carts, orders |
 
 The server does two jobs:
 
@@ -139,114 +140,84 @@ React 19 + Vite 8, TypeScript, no UI framework and no CSS framework — plain CS
 design-token set.
 
 ```
-frontends/v2/          the app (views, styles)
-shared/src/api.ts      typed API client + money/session helpers
-shared/src/cart.tsx    cart context (add / update / remove)
-shared/src/ab.tsx      the testing-grounds client (assign, exposure, events)
+frontends/v2/            the Vite entry point
+src/components/          views, slot components, the registry and the CSS
+src/variants/            variant configs
+shared/src/api.ts        typed API client + money/session helpers
+shared/src/cart.tsx      cart context (add / update / remove)
+shared/src/variant.ts    reads window.__VARIANT__, selects the cohort
+shared/src/beacon.ts     component manifest + session_end beacon
 ```
 
-`shared/` is consumed as TypeScript source via a Vite alias, so the app and the harness stay in one
+`shared/` is consumed as TypeScript source via a Vite alias, so the app and its plumbing stay in one
 place and typecheck together.
 
 ### Data flow for a single visit
 
-1. App mounts → `GET /api/ab/assign?visitor=…&unit=home`.
-2. Backend asks the configured provider (or hashes the visitor id) → `{ "variant": "v2" }`.
-3. App renders and fires an `exposure` event with the variant, visitor and session ids.
-4. Every meaningful interaction fires an event: `click` (with an element name), `add_to_cart`,
-   `remove_from_cart`, `purchase`, `newsletter_signup`.
-5. Your platform reads `data/events.jsonl` or `GET /api/ab/stats` and closes the loop.
+1. The edge proxy mints the session, picks an arm and injects `window.__VARIANT__` into the HTML.
+2. The app selects the first cohort of the config that matches the visitor's OS and viewport, and
+   fills the `hero`, `finder` and `shipping` slots from the registry.
+3. The beacon collects the manifest and the telemetry while the visitor shops.
+4. On `pagehide`, it sends one `session_end` record to the console.
 
-If the testing grounds are unavailable, the shop still works — events are simply dropped.
+Without the proxy (`npm run serve`), the baseline renders and nothing is sent. If the console is
+unreachable, the shop still works: the record is simply dropped.
 
 ---
 
-## The testing grounds
+## The console contract
 
-This is the part that exists for the experiment program. It contains **no experiment logic**: no
-split decisions beyond a fallback, no significance testing, no winner selection.
+What ADR 0001 requires of the storefront (D-14, D-20, D-24, D-28, D-34, D-35, D-37).
 
-### Assignment hook
+### Variant config
 
-`GET /api/ab/assign?visitor=<id>&unit=<unit>`
-
-- `visitor` — a stable id the front-end keeps in `localStorage`.
-- `unit` — the unit under test (default `home`). Different units are independent experiments.
-
-The backend delegates to a **provider**:
-
-| `AB_PROVIDER` | Behaviour |
-| --- | --- |
-| `fallback` (default) | FNV-1a hash of `visitor:unit` over `AB_VARIANTS`. Deterministic, sticky, no external dependency. |
-| `http` | `GET {AB_HTTP_URL}?visitor=…&unit=…&site=stride-shop`, expects `{"variant": "..."}`. On timeout or error it falls back to the hash provider so the shop never breaks. |
-
-Assignments are cached in memory per `(visitor, unit)`. The response includes `source`, which is
-one of `provider`, `cache`, `fallback`, or `fallback_after_error` — useful for spotting a broken
-provider in production.
-
-### Exposure and events
-
-`POST /api/ab/events`
+`variant-config.schema.json` at the repo root is the contract; the console fetches it on every run.
+The first cohort that matches wins, and a slot it omits keeps the baseline's component:
 
 ```json
 {
-  "visitor": "6f1c…",
-  "session": "9a02…",
-  "variant": "v2",
-  "unit": "home",
-  "name": "purchase",
-  "props": { "order_id": "ST-123456", "value_cents": 18900, "items": 1 }
+  "variant_id": "android-hero-v1",
+  "cohorts": [
+    {
+      "match": { "os": "Android", "viewport_bucket": "any" },
+      "slots": { "hero": "Hero_Android_Ecosystem" },
+      "catalog_filter": { "category": "any", "price_tier": "mid" }
+    }
+  ]
 }
 ```
 
-Events are appended to `data/events.jsonl` (one JSON object per line, with a `ts` field) and kept
-in memory. Exposure events also maintain a per-`(unit, variant)` counter that is rebuilt from the
-log on restart.
+A name that isn't in `src/components/registry.ts` throws during render, so QA fails it loudly.
 
-Standard event names the front-end emits:
+### Where the agent may work
 
-| Event | When | Useful props |
-| --- | --- | --- |
-| `exposure` | app mounted with an assignment | `path`, `source` |
-| `click` | a tracked UI element | `element`, plus context |
-| `add_to_cart` | item added | `product_id`, `qty`, `size`, `color` |
-| `remove_from_cart` | item removed | `product_id` |
-| `purchase` | checkout completed | `order_id`, `value_cents`, `items` |
+The console's coding agent can only change `src/components/**`, `src/variants/**` and `qa/**`, which
+is why the views and the CSS live there. A new component must be registered, tagged with
+`data-component` and `data-*` tags, and accept its slot's props (see `registry.ts`).
 
-Anything else is accepted — the log does not validate event names, so new events can be added
-without touching the backend.
+### Session record
 
-### Raw counts
+The beacon sends the canonical record of D-14: `session_id`, `variant_id` and `decision_id` echoed
+from the proxy (never generated here), `context` (X_u, with the scored `features`), `manifest` (M_v)
+and `telemetry` (T_u). `context.geo.country` comes from the proxy too, because the browser can't
+know it. Funnel steps are `landing`, `product`, `cart`, `shipping`, `payment` and
+`confirmation`. Input `name`s start with their step (`shipping_zip`), because attribution groups
+field dwell by that prefix.
 
-`GET /api/ab/stats` returns per-variant event counts, unique visitors and exposures by unit. It is
-a convenience for eyeballing data, **not** an analysis engine.
+Set `INGEST_URL` to `https://<console>/api/ingest/<token>` to turn it on. The browser reads it from
+`GET /api/config`, so rotating the token needs no rebuild.
 
-### Reset
+### Running behind the edge proxy
 
-`POST /api/ab/reset` clears the in-memory log, exposure index and assignment cache, and truncates
-`events.jsonl`. Useful between test runs. It does not touch the provider.
+Point the proxy's `EDGE_UPSTREAM` at this server and send visitors to the proxy. No change is needed
+here: the server's HTML has a `</head>` to inject before and isn't compressed.
 
-### Reference provider
+### QA
 
-`examples/ab-provider/server.mjs` is a deliberately dumb external provider so you can see the loop
-work end to end. It is **not** part of the app.
-
-```bash
-node examples/ab-provider/server.mjs                       # :9100
-AB_PROVIDER=http AB_HTTP_URL=http://127.0.0.1:9100/assign npm run serve
-```
-
-| Endpoint | Purpose |
-| --- | --- |
-| `GET /assign?visitor=&unit=` | sticky assignment by weight |
-| `POST /rollout {"weights": {"v2": 1}}` | change the split (weights must sum to 1) |
-| `GET /report` | pulls `/api/ab/stats` and computes a plain conversion rate |
-
-### Forcing a variant while testing
-
-The site renders one front-end, but the reported assignment can be pinned with `?force=v2` on any
-URL. The override is tagged `source: "override"` on the exposure event so QA traffic can be
-filtered out.
+`qa/compose.yaml` is the stack the console's QA runner brings up, with the edge proxy and its
+Playwright gates layered on top. The gates need one button named **Checkout** on the landing page
+that reaches `[data-testid=confirmation]` with a `data-order-id`, and a webhook recorded for that
+order by the payment mock.
 
 ---
 
@@ -259,6 +230,8 @@ All endpoints are JSON. Errors are `{"error": "..."}` with a 4xx status.
 | Method | Path | Body / query | Returns |
 | --- | --- | --- | --- |
 | `GET` | `/api/health` | — | `ok` (plain text) |
+| `GET` | `/api/config` | — | `{ ingest_url }` (`null` when unset) |
+| `POST` | `/api/webhooks/payment` | `{ type, order_id }` | `{ ok: true }`; `payment.succeeded` marks the order paid |
 | `GET` | `/api/products` | `?category=footwear&q=boot` | `{ products: [...] }` |
 | `GET` | `/api/products/{id-or-slug}` | — | `{ product: {...} }` |
 | `GET` | `/api/cart` | `?sid=` | cart |
@@ -291,15 +264,6 @@ A cart looks like:
 
 Shipping is free over $75 (7500 cents), otherwise $4.90.
 
-### Testing grounds
-
-| Method | Path | Body / query | Returns |
-| --- | --- | --- | --- |
-| `GET` | `/api/ab/assign` | `?visitor=&unit=` | `{ variant, source, unit }` |
-| `POST` | `/api/ab/events` | event object | `{ ok: true }` |
-| `GET` | `/api/ab/stats` | — | counts per variant |
-| `POST` | `/api/ab/reset` | — | `{ ok: true }` |
-
 ---
 
 ## Configuration
@@ -309,15 +273,13 @@ Shipping is free over $75 (7500 cents), otherwise $4.90.
 | `PORT` | `8080` | Port to listen on |
 | `BIND_ADDR` | `127.0.0.1` | Interface to bind (`0.0.0.0` in the container) |
 | `FRONTEND_DIR` | `frontend` | Where the built front-end lives |
-| `DATA_DIR` | `data` | Where `events.jsonl` is written |
-| `AB_PROVIDER` | `fallback` | `fallback` or `http` |
-| `AB_VARIANTS` | `v2` | Variant names for the fallback provider |
-| `AB_HTTP_URL` | — | Assignment endpoint for `AB_PROVIDER=http` (plain HTTP only) |
-| `AB_HTTP_TIMEOUT_MS` | `400` | Provider timeout before falling back |
+| `INGEST_URL` | — | The console's `/api/ingest/{token}` URL. Unset means no session records are sent |
+| `PAYMENT_URL` | — | Payment provider as `http://host:port` (plain HTTP only). Unset means orders are paid on the spot |
+| `PUBLIC_WEBHOOK_URL` | — | Where the provider sends its webhook. Required with `PAYMENT_URL` |
 | `RUST_LOG` | `stride_backend=info` | Log filter |
 
 `npm run serve` goes through `scripts/serve.mjs`, which finds `cargo` even when npm's `/bin/sh` has
-not sourced `~/.cargo/env`, and points `FRONTEND_DIR` / `DATA_DIR` at the repo root.
+not sourced `~/.cargo/env`, and points `FRONTEND_DIR` at the repo root.
 
 ---
 
@@ -355,8 +317,7 @@ npm run dev -w @stride/v2   # in another
 cargo test --manifest-path backend/Cargo.toml
 ```
 
-Covers the assignment hash (stability, distribution, empty variant list), chunked HTTP decoding for
-the provider client, and URL encoding.
+Covers reading the payment provider's response.
 
 ### Smoke test
 
@@ -365,14 +326,26 @@ npm test                    # starts and stops the server itself
 scripts/smoke.sh            # against an already-running server
 ```
 
-Checks health, static serving at `/`, asset loading, that `/v2/` is gone, assignment stickiness,
-event logging, the product API, and the full cart → checkout flow including the empty-cart
-rejection.
+Checks health, static serving at `/`, asset loading, that `/v2/` and `/api/ab` are gone, the product
+API, the full cart → checkout flow including the empty-cart rejection, the runtime config and the
+webhook's unknown-order rejection.
+
+### Browser suite
+
+```bash
+docker compose -f qa/compose.yaml run --build --rm e2e
+docker compose -f qa/compose.yaml --profile e2e down --volumes
+```
+
+Runs `qa/storefront.spec.ts` against the QA stack at 360×780 and 1440×900: both checkout paths
+including the payment webhook, cohort selection, catalog filters, and the session record. It stands
+in for the edge proxy by setting `window.__VARIANT__` itself.
 
 ### CI
 
 Every push and pull request runs `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test`,
-the TypeScript typecheck, the production build, and the smoke test against a real server.
+the TypeScript typecheck, the production build, the smoke test against a real server, and the
+browser suite.
 
 ---
 
@@ -387,8 +360,9 @@ Two workflows in `.github/workflows/`.
 | **Backend (Rust)** | Code is formatted, clippy-clean with warnings as errors, tests pass, release build succeeds |
 | **Front-end (React)** | TypeScript typechecks and the production build succeeds; build output is uploaded as an artifact |
 | **Smoke test** | Both halves build, the real server starts, and the real API and pages respond correctly |
+| **QA stack** | The stack the console's QA runner uses comes up, and the browser suite passes against it |
 
-`smoke` depends on the other two, so a green run means the whole stack works together.
+`smoke` and `qa` depend on the other two, so a green run means the whole stack works together.
 
 ### `release.yml` — on push to `main`, tags, or manual dispatch
 
@@ -430,12 +404,6 @@ docker build -f docker/Dockerfile -t stride .
 docker run --rm -p 8080:8080 stride
 ```
 
-Mount `data/` if you want the event log to survive container replacement:
-
-```bash
-docker run --rm -p 8080:8080 -v "$PWD/data:/app/data" stride
-```
-
 ### Behind a reverse proxy
 
 The server speaks plain HTTP and binds `127.0.0.1` by default. In a container it binds `0.0.0.0`
@@ -444,9 +412,8 @@ via `BIND_ADDR`. Terminate TLS at your proxy and forward to port 8080.
 ### Notes
 
 - Carts and orders are in memory — run a single instance, or accept that carts are per-instance.
-- The event log is append-only JSONL. For real volume, ship it to your experiment platform or
-  replace the sink in `src/ab.rs`.
-- There is no authentication and no payment integration. Do not expose it as a real store.
+- There is no authentication and no real payment integration, and the payment webhook is unsigned.
+  Do not expose it as a real store.
 
 ---
 
@@ -458,14 +425,14 @@ backend/                 Rust backend (axum)
   src/api.rs             products, cart, checkout, orders
   src/catalog.rs         the catalogue
   src/state.rs           shared state
-  src/ab.rs              testing grounds (no experiment logic)
-frontends/v2/            the React app, built to frontend/ and served at /
-  src/App.tsx            views: landing wizard, product, bag
-  src/styles.css         design tokens and layout
-shared/src/              API client, cart context, A/B harness
+frontends/v2/            Vite entry point, built to frontend/ and served at /
+src/components/          views, slot components, registry.ts, styles.css
+src/variants/            variant configs, including the baseline
+variant-config.schema.json  the config contract the console validates against
+shared/src/              API client, cart context, variant loader, beacon
+qa/                      QA stack (compose.yaml), payment mock, Playwright suite
 scripts/serve.mjs        finds cargo, sets paths, starts the backend
 scripts/smoke.sh         end-to-end API checks
-examples/ab-provider/    reference external decision service (not part of the app)
 docker/Dockerfile        multi-stage image
 .github/workflows/       ci.yml, release.yml
 ```
@@ -481,4 +448,3 @@ docker/Dockerfile        multi-stage image
 | `Not found. The shop lives at /` | front-end not built | `npm run build` |
 | `/v2/` returns 404 | expected — the shop is at `/` | use `/` |
 | Blank page, no console errors | assets 404 after a rebuild | hard-reload; asset filenames are content-hashed |
-| `source: "fallback_after_error"` on assignment | provider unreachable or slow | check `AB_HTTP_URL`, raise `AB_HTTP_TIMEOUT_MS` |

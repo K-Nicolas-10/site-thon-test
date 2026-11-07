@@ -9,7 +9,7 @@ const here = process.cwd();
 /**
  * The front-end is built into ./frontend/ and served by the Rust backend at
  * the site root (`/`). The shared package is aliased to source so the app and
- * the A/B harness stay in one place.
+ * its variant and telemetry plumbing stay in one place.
  */
 export function frontendConfig() {
   return defineConfig({

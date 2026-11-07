@@ -2,7 +2,7 @@
 name = "stride-backend"
 version = "0.1.0"
 edition = "2021"
-description = "Backend for the Stride footwear/headwear/accessories shop and its closed-loop A/B testing program"
+description = "Backend for the Stride footwear/headwear/accessories shop"
 
 [dependencies]
 axum = { version = "0.8", features = ["macros"] }

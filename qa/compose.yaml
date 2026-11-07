@@ -1,0 +1,74 @@
+# The QA stack (ADR 0001, D-37): the real app and a payment mock that records webhook calls. Seed data
+# is built into the app (backend/src/catalog.rs). The console's QA runner layers its compose override
+# on top, which adds the edge proxy in QA mode and the Playwright gates. Contract it relies on:
+#   - service `app` serves the storefront on port 3000 and is healthchecked;
+#   - service `payment-mock` lists every call it received and made at GET :4010/calls.
+# Nothing publishes a host port and nothing is bind-mounted, so several runs can share a Docker host.
+#
+# This repo's own suite: docker compose -f qa/compose.yaml run --build --rm e2e
+
+services:
+    payment-mock:
+        build:
+            context: .
+            dockerfile_inline: |
+                FROM node:22-alpine
+                COPY payment-mock.mjs /srv/
+                USER node
+                CMD ["node", "/srv/payment-mock.mjs"]
+        expose:
+            - '4010'
+        healthcheck:
+            test:
+                [
+                    'CMD',
+                    'node',
+                    '-e',
+                    "fetch('http://127.0.0.1:4010/healthz').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))",
+                ]
+            interval: 2s
+            timeout: 3s
+            retries: 15
+
+    app:
+        build:
+            context: ..
+            dockerfile: docker/Dockerfile
+        environment:
+            PORT: '3000'
+            PAYMENT_URL: http://payment-mock:4010
+            # Where the payment mock delivers webhooks: straight to the app, not through the edge.
+            PUBLIC_WEBHOOK_URL: http://app:3000/api/webhooks/payment
+        expose:
+            - '3000'
+        networks:
+            default:
+                aliases:
+                    - storefront
+        depends_on:
+            payment-mock:
+                condition: service_healthy
+        healthcheck:
+            test: ['CMD', 'curl', '-fsS', 'http://127.0.0.1:3000/api/health']
+            interval: 2s
+            timeout: 3s
+            retries: 15
+
+    e2e:
+        profiles: ['e2e']
+        build:
+            context: .
+            dockerfile_inline: |
+                FROM mcr.microsoft.com/playwright:v1.64.1-noble
+                WORKDIR /qa
+                COPY package.json ./
+                RUN npm install --no-audit --no-fund
+                COPY playwright.config.ts storefront.spec.ts ./
+                CMD ["npx", "playwright", "test"]
+        environment:
+            # Not http://app: Chromium forces HTTPS on the HSTS-preloaded .app TLD.
+            BASE_URL: http://storefront:3000
+            PAYMENT_MOCK_URL: http://payment-mock:4010
+        depends_on:
+            app:
+                condition: service_healthy
